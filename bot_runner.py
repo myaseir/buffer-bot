@@ -17,13 +17,15 @@ load_dotenv()
 REDIS_URL = os.getenv("UPSTASH_REDIS_URL")
 API_WS_URL = os.getenv("API_WS_URL") 
 BOT_SECRET_TOKEN = os.getenv("BOT_TOKEN")
+# Render provides the PORT environment variable automatically
 PORT = int(os.getenv("PORT", 10000))
 
+# Initialize Redis client
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
 # --- 🧹 THE KILL SWITCH (CLEANER) ---
 def run_redis_janitor():
-    """Wipes active matches and queues on startup."""
+    """Wipes active matches and queues on startup to prevent ghosting."""
     print("🧹 Starting Redis Janitor...")
     try:
         match_keys = r.keys("match:live:*")
@@ -36,16 +38,23 @@ def run_redis_janitor():
     except Exception as e:
         print(f"⚠️ Janitor Error: {e}")
 
-# --- 🌐 RENDER HEALTH CHECK ---
+# --- 🌐 RENDER HEALTH CHECK (For Web Service Tier) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header('Content-type', 'text/html')
         self.end_headers()
-        self.wfile.write(b"Bot Scaling Service Active")
-    def log_message(self, format, *args): return
+        self.wfile.write(b"BrainBuffer Bot Scaling Service is Online")
+
+    def log_message(self, format, *args):
+        return # Keep console clean by not logging every ping
 
 def run_health_check():
-    HTTPServer(('0.0.0.0', PORT), HealthCheckHandler).serve_forever()
+    """Runs a tiny HTTP server so Render knows the service is alive."""
+    server_address = ('0.0.0.0', PORT)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    print(f"📡 Health Check server listening on port {PORT}")
+    httpd.serve_forever()
 
 # --- 🎮 BOT GAMEPLAY LOGIC ---
 async def simulate_gameplay(match_id, bot_id):
@@ -67,7 +76,7 @@ async def simulate_gameplay(match_id, bot_id):
                     print(f"🕹️ {bot_id} vs Human | {len(rounds)} Rounds | Start!")
                     break
 
-            # 2. Countdown Stalling
+            # 2. Countdown Stalling (Sync with Human UI)
             await asyncio.sleep(4.0) 
 
             # 3. Balanced Gameplay Loop
@@ -75,7 +84,7 @@ async def simulate_gameplay(match_id, bot_id):
             accuracy = 0.88 
             
             for i in range(len(rounds)):
-                # 🐢 SLIGHTLY SLOWER: 1.2s to 2.2s per update
+                # Balanced speed: 1.2s to 2.2s per update
                 await asyncio.sleep(random.uniform(1.2, 2.2))
 
                 if random.random() < accuracy:
@@ -86,15 +95,19 @@ async def simulate_gameplay(match_id, bot_id):
                     }))
 
             # 4. Finalize & Wait for Backend
-            print(f"⌛ {bot_id} finished all rounds. Requesting results...")
+            print(f"⌛ {bot_id} finished rounds. Requesting results...")
             await websocket.send(json.dumps({"type": "GAME_OVER"}))
             
-            # 🚀 RESULT LISTENER (The most important part)
+            # 🚀 RESULT LISTENER
             try:
-                # We wait 20 seconds because Render can be slow to process DB updates
+                # We wait 20 seconds to allow Render's DB to update and send the payout
                 while True:
                     res_msg = await asyncio.wait_for(websocket.recv(), timeout=20)
                     res_data = json.loads(res_msg)
+                    
+                    # Log message type for debugging
+                    if res_data.get("type") != "SCORE_UPDATE":
+                        print(f"📩 Incoming Signal: {res_data.get('type')}")
                     
                     if res_data.get("type") == "RESULT":
                         status = res_data.get("status")
@@ -116,7 +129,7 @@ async def simulate_gameplay(match_id, bot_id):
                         print("█"*45 + "\n")
                         break
             except Exception as e:
-                print(f"ℹ️ {bot_id} connection closed without result packet.")
+                print(f"ℹ️ {bot_id} result listener timed out or closed: {e}")
 
             await websocket.close()
 
@@ -126,6 +139,7 @@ async def simulate_gameplay(match_id, bot_id):
 
 # --- 👀 THE OBSERVER LOOP ---
 async def watch_matches():
+    """Polls Redis and spawns bot tasks for searching humans."""
     print(f"🚀 Scaling Mode: Listening for human-led matches...")
     processed = set()
 
@@ -152,8 +166,14 @@ async def watch_matches():
             await asyncio.sleep(2)
 
 if __name__ == "__main__":
+    # 1. Clean up Redis keys from previous crashed sessions
     run_redis_janitor()
-    threading.Thread(target=run_health_check, daemon=True).start()
+    
+    # 2. Start the Health Check server in a background thread for Render
+    health_thread = threading.Thread(target=run_health_check, daemon=True)
+    health_thread.start()
+    
+    # 3. Start the main Bot Observer
     print("🚀 Starting BrainBuffer Bot Service...")
     try:
         asyncio.run(watch_matches())
