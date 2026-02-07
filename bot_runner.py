@@ -139,45 +139,27 @@ async def simulate_gameplay(match_id, bot_id):
 
 # --- 👀 THE OBSERVER LOOP ---
 async def watch_matches():
-    """Polls Redis and spawns bot tasks for searching humans."""
     print(f"🚀 Scaling Mode: Listening for human-led matches...")
-    processed = set()
-
     while True:
         try:
-            keys = r.keys("match:live:*")
-            current_time = time.time()
-            for key in keys:
-                match_id = key.split(":")[-1]
-                if match_id in processed: continue
-                data = r.hgetall(key)
+            # 1. Pop a match ID from the set (Atomic and Fast)
+            match_id = r.spop("pending_bot_matches")
+            
+            if match_id:
+                # 2. Get the match data directly by its key
+                match_key = f"match:live:{match_id}"
+                data = r.hgetall(match_key)
+                
                 p2_id = data.get("p2_id")
                 status = data.get("status")
 
                 if p2_id and p2_id.startswith("BOT") and status == "CREATED":
-                    processed.add(match_id)
                     print(f"🎯 Human Found! Match {match_id} assigned to {p2_id}")
                     asyncio.create_task(simulate_gameplay(match_id, p2_id))
             
-            if len(processed) > 500: processed.clear()
-            await asyncio.sleep(0.5) 
+            # 3. You can keep this sleep or even lower it slightly 
+            # because SPOP is much lighter than KEYS.
+            await asyncio.sleep(1.0) 
         except Exception as e:
             print(f"⚠️ Service Error: {e}")
             await asyncio.sleep(2)
-
-if __name__ == "__main__":
-    # 1. Clean up Redis keys from previous crashed sessions
-    run_redis_janitor()
-    
-    # 2. Start the Health Check server in a background thread for Render
-    health_thread = threading.Thread(target=run_health_check, daemon=True)
-    health_thread.start()
-    
-    # 3. Start the main Bot Observer
-    print("🚀 Starting BrainBuffer Bot Service...")
-    try:
-        asyncio.run(watch_matches())
-    except KeyboardInterrupt:
-        print("\n🛑 Stopped by User.")
-    except Exception as e:
-        print(f"💥 Fatal Error: {e}")
