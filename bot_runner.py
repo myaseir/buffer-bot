@@ -17,7 +17,6 @@ load_dotenv()
 REDIS_URL = os.getenv("UPSTASH_REDIS_URL")
 API_WS_URL = os.getenv("API_WS_URL") 
 BOT_SECRET_TOKEN = os.getenv("BOT_TOKEN")
-# Render provides the PORT environment variable automatically
 PORT = int(os.getenv("PORT", 10000))
 
 # Initialize Redis client
@@ -38,7 +37,7 @@ def run_redis_janitor():
     except Exception as e:
         print(f"⚠️ Janitor Error: {e}")
 
-# --- 🌐 RENDER HEALTH CHECK (For Web Service Tier) ---
+# --- 🌐 RENDER HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -47,16 +46,15 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"BrainBuffer Bot Scaling Service is Online")
 
     def log_message(self, format, *args):
-        return # Keep console clean by not logging every ping
+        return 
 
 def run_health_check():
-    """Runs a tiny HTTP server so Render knows the service is alive."""
     server_address = ('0.0.0.0', PORT)
     httpd = HTTPServer(server_address, HealthCheckHandler)
     print(f"📡 Health Check server listening on port {PORT}")
     httpd.serve_forever()
 
-# --- 🎮 BOT GAMEPLAY LOGIC ---
+# --- 🎮 BOT GAMEPLAY LOGIC (Unchanged) ---
 async def simulate_gameplay(match_id, bot_id):
     """Handles a single match with balanced speed and result capture."""
     await asyncio.sleep(1.0)
@@ -66,7 +64,6 @@ async def simulate_gameplay(match_id, bot_id):
         async with websockets.connect(uri, open_timeout=15) as websocket:
             print(f"✅ {bot_id} joined Match {match_id}")
 
-            # 1. Wait for Start Signal
             rounds = []
             while True:
                 msg = await asyncio.wait_for(websocket.recv(), timeout=25)
@@ -76,15 +73,12 @@ async def simulate_gameplay(match_id, bot_id):
                     print(f"🕹️ {bot_id} vs Human | {len(rounds)} Rounds | Start!")
                     break
 
-            # 2. Countdown Stalling (Sync with Human UI)
             await asyncio.sleep(4.0) 
 
-            # 3. Balanced Gameplay Loop
             current_score = 0
             accuracy = 0.88 
             
             for i in range(len(rounds)):
-                # Balanced speed: 1.2s to 2.2s per update
                 await asyncio.sleep(random.uniform(1.2, 2.2))
 
                 if random.random() < accuracy:
@@ -94,18 +88,14 @@ async def simulate_gameplay(match_id, bot_id):
                         "score": current_score
                     }))
 
-            # 4. Finalize & Wait for Backend
             print(f"⌛ {bot_id} finished rounds. Requesting results...")
             await websocket.send(json.dumps({"type": "GAME_OVER"}))
             
-            # 🚀 RESULT LISTENER
             try:
-                # We wait 20 seconds to allow Render's DB to update and send the payout
                 while True:
                     res_msg = await asyncio.wait_for(websocket.recv(), timeout=20)
                     res_data = json.loads(res_msg)
                     
-                    # Log message type for debugging
                     if res_data.get("type") != "SCORE_UPDATE":
                         print(f"📩 Incoming Signal: {res_data.get('type')}")
                     
@@ -137,44 +127,69 @@ async def simulate_gameplay(match_id, bot_id):
         if "1000" not in str(e): 
             print(f"❌ Match {match_id} Error: {e}")
 
-# --- 👀 THE OBSERVER LOOP ---
+# --- 👀 THE OPTIMIZED OBSERVER LOOP ---
 async def watch_matches():
-    """Polls Redis and spawns bot tasks for searching humans."""
+    """Polls Redis efficiently using Pipelines to save bandwidth/costs."""
     print(f"🚀 Scaling Mode: Listening for human-led matches...")
+    
+    # Track matches we have already handled to avoid re-querying Redis
     processed = set()
 
     while True:
         try:
-            keys = r.keys("match:live:*")
-            current_time = time.time()
-            for key in keys:
-                match_id = key.split(":")[-1]
-                if match_id in processed: continue
-                data = r.hgetall(key)
-                p2_id = data.get("p2_id")
-                status = data.get("status")
-
-                if p2_id and p2_id.startswith("BOT") and status == "CREATED":
-                    processed.add(match_id)
-                    print(f"🎯 Human Found! Match {match_id} assigned to {p2_id}")
-                    asyncio.create_task(simulate_gameplay(match_id, p2_id))
+            # 1. Fetch all keys (1 Command)
+            match_keys = r.keys("match:live:*")
             
-            if len(processed) > 500: processed.clear()
-            await asyncio.sleep(0.5) 
+            # 2. Filter locally (0 Commands)
+            # Find keys that we haven't processed yet
+            new_keys = [k for k in match_keys if k.split(":")[-1] not in processed]
+
+            if new_keys:
+                # 3. PIPELINE FETCH (1 Command for ALL new keys)
+                # Instead of sending 10 requests for 10 matches, we send 1.
+                pipe = r.pipeline()
+                for key in new_keys:
+                    # hmget is cheaper than hgetall (fetches only needed fields)
+                    pipe.hmget(key, ["p2_id", "status"])
+                
+                results = pipe.execute()
+
+                # 4. Process Results
+                for key, data in zip(new_keys, results):
+                    match_id = key.split(":")[-1]
+                    p2_id = data[0]
+                    status = data[1]
+
+                    # If it's a new match waiting for a bot
+                    if p2_id and p2_id.startswith("BOT") and status == "CREATED":
+                        print(f"🎯 Human Found! Match {match_id} assigned to {p2_id}")
+                        asyncio.create_task(simulate_gameplay(match_id, p2_id))
+                    
+                    # Add to processed so we don't fetch it again
+                    processed.add(match_id)
+
+            # 5. Smart Cleanup (Pure Python)
+            # Remove IDs from 'processed' that are no longer in Redis (matches deleted by backend)
+            # This prevents memory leaks without the need to "wipe and re-read" everything
+            current_live_ids = {k.split(":")[-1] for k in match_keys}
+            processed.intersection_update(current_live_ids)
+
+            # 6. Throttling (Saves Cost)
+            # Increased from 0.5s to 2.0s. 
+            # This reduces idle command usage by 4x.
+            await asyncio.sleep(2.0) 
+
         except Exception as e:
             print(f"⚠️ Service Error: {e}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    # 1. Clean up Redis keys from previous crashed sessions
     run_redis_janitor()
     
-    # 2. Start the Health Check server in a background thread for Render
     health_thread = threading.Thread(target=run_health_check, daemon=True)
     health_thread.start()
     
-    # 3. Start the main Bot Observer
-    print("🚀 Starting BrainBuffer Bot Service...")
+    print("🚀 Starting BrainBuffer Bot Service (Optimized)...")
     try:
         asyncio.run(watch_matches())
     except KeyboardInterrupt:
