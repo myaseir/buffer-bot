@@ -64,6 +64,7 @@ async def simulate_gameplay(match_id, bot_id):
         async with websockets.connect(uri, open_timeout=15) as websocket:
             print(f"✅ {bot_id} joined Match {match_id}")
 
+            # 1. Wait for Start Signal
             rounds = []
             while True:
                 msg = await asyncio.wait_for(websocket.recv(), timeout=25)
@@ -73,8 +74,10 @@ async def simulate_gameplay(match_id, bot_id):
                     print(f"🕹️ {bot_id} vs Human | {len(rounds)} Rounds | Start!")
                     break
 
+            # 2. Countdown Stalling
             await asyncio.sleep(4.0) 
 
+            # 3. Balanced Gameplay Loop
             current_score = 0
             accuracy = 0.88 
             
@@ -88,6 +91,7 @@ async def simulate_gameplay(match_id, bot_id):
                         "score": current_score
                     }))
 
+            # 4. Finalize & Wait for Backend
             print(f"⌛ {bot_id} finished rounds. Requesting results...")
             await websocket.send(json.dumps({"type": "GAME_OVER"}))
             
@@ -95,9 +99,6 @@ async def simulate_gameplay(match_id, bot_id):
                 while True:
                     res_msg = await asyncio.wait_for(websocket.recv(), timeout=20)
                     res_data = json.loads(res_msg)
-                    
-                    if res_data.get("type") != "SCORE_UPDATE":
-                        print(f"📩 Incoming Signal: {res_data.get('type')}")
                     
                     if res_data.get("type") == "RESULT":
                         status = res_data.get("status")
@@ -109,17 +110,10 @@ async def simulate_gameplay(match_id, bot_id):
                         print(f"🏁 MATCH FINISHED: {match_id}")
                         print(f"🤖 {bot_id} Score: {my_final}")
                         print(f"👤 {op_name} Score: {op_final}")
-                        
-                        if status == "WON":
-                            print(f"🏆 RESULT: BOT WON")
-                        elif status == "LOST":
-                            print(f"🏆 RESULT: HUMAN WON")
-                        else:
-                            print("🤝 RESULT: DRAW")
                         print("█"*45 + "\n")
                         break
             except Exception as e:
-                print(f"ℹ️ {bot_id} result listener timed out or closed: {e}")
+                print(f"ℹ️ {bot_id} result listener timed out: {e}")
 
             await websocket.close()
 
@@ -129,27 +123,27 @@ async def simulate_gameplay(match_id, bot_id):
 
 # --- 👀 THE OPTIMIZED OBSERVER LOOP ---
 async def watch_matches():
-    """Polls Redis efficiently using Pipelines to save bandwidth/costs."""
+    """Polls Redis efficiently using Pipelines and Throttling."""
     print(f"🚀 Scaling Mode: Listening for human-led matches...")
     
-    # Track matches we have already handled to avoid re-querying Redis
+    # Track matches locally to avoid re-querying Redis for the same match
     processed = set()
 
     while True:
         try:
-            # 1. Fetch all keys (1 Command)
+            # 1. GET KEYS (1 Command)
             match_keys = r.keys("match:live:*")
             
-            # 2. Filter locally (0 Commands)
-            # Find keys that we haven't processed yet
+            # 2. LOCAL FILTER (0 Commands)
+            # Only ask Redis about keys we haven't seen before
             new_keys = [k for k in match_keys if k.split(":")[-1] not in processed]
 
             if new_keys:
-                # 3. PIPELINE FETCH (1 Command for ALL new keys)
-                # Instead of sending 10 requests for 10 matches, we send 1.
+                # 3. PIPELINE FETCH (1 Batch Command)
+                # Instead of looping and sending 10 requests, we send 1 request for 10 items.
                 pipe = r.pipeline()
                 for key in new_keys:
-                    # hmget is cheaper than hgetall (fetches only needed fields)
+                    # hmget is cheaper/faster than hgetall
                     pipe.hmget(key, ["p2_id", "status"])
                 
                 results = pipe.execute()
@@ -160,23 +154,21 @@ async def watch_matches():
                     p2_id = data[0]
                     status = data[1]
 
-                    # If it's a new match waiting for a bot
                     if p2_id and p2_id.startswith("BOT") and status == "CREATED":
                         print(f"🎯 Human Found! Match {match_id} assigned to {p2_id}")
                         asyncio.create_task(simulate_gameplay(match_id, p2_id))
                     
-                    # Add to processed so we don't fetch it again
+                    # Mark as processed so we don't fetch it again
                     processed.add(match_id)
 
-            # 5. Smart Cleanup (Pure Python)
-            # Remove IDs from 'processed' that are no longer in Redis (matches deleted by backend)
-            # This prevents memory leaks without the need to "wipe and re-read" everything
+            # 5. SMART CLEANUP
+            # If a match is deleted from Redis (game over), remove it from our local 'processed' list
+            # This prevents memory leaks without needing to wipe the list constantly
             current_live_ids = {k.split(":")[-1] for k in match_keys}
             processed.intersection_update(current_live_ids)
 
-            # 6. Throttling (Saves Cost)
-            # Increased from 0.5s to 2.0s. 
-            # This reduces idle command usage by 4x.
+            # 6. THROTTLE (Saves Cost)
+            # Sleep 2.0s instead of 0.5s. Reduces idle command usage by 75%.
             await asyncio.sleep(2.0) 
 
         except Exception as e:
