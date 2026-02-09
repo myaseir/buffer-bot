@@ -79,7 +79,7 @@ async def simulate_gameplay(match_id, bot_id):
 
             # 3. Balanced Gameplay Loop
             current_score = 0
-            accuracy = 0.99 
+            accuracy = 0.88 
             
             for i in range(len(rounds)):
                 await asyncio.sleep(random.uniform(1.2, 2.2))
