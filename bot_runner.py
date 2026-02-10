@@ -12,13 +12,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- CONFIGURATION ---
-# Use UPSTASH_REDIS_REST_URL for the redis-py client if not using the REST wrapper
+# Use the connection string from your Render Dashboard
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL") or os.getenv("REDIS_URL")
 API_WS_URL = os.getenv("API_WS_URL") 
 BOT_SECRET_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
 
-# Connection with retry logic for Upstash stability
+if not REDIS_URL:
+    print("❌ ERROR: REDIS_URL is not set. Check Render Environment variables.")
+
+# Connection using standard redis-py (compatible with Upstash via SSL/TLS)
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
 # --- 🌐 HEALTH CHECK ---
@@ -40,7 +43,7 @@ async def simulate_gameplay(match_id, bot_id):
     Connects to the match via WebSocket and simulates a human player.
     """
     await asyncio.sleep(0.5)
-    # Standardized match URL structure
+    # Ensure URI matches your backend router structure: /ws/match/{match_id}
     uri = f"{API_WS_URL}/match/{match_id}?token={BOT_SECRET_TOKEN}&bot_id={bot_id}"
     
     try:
@@ -54,16 +57,15 @@ async def simulate_gameplay(match_id, bot_id):
                     rounds = data.get("rounds", [])
                     break
 
-            # 2. Wait for UI countdown (3-4 seconds)
+            # 2. Wait for UI countdown (Sync with human 4s timer)
             await asyncio.sleep(4.2) 
 
             current_score = 0
             for i in range(len(rounds)):
-                # 3. Humanized Delay: Skilled but not instant (5.2s - 7.5s)
+                # 3. Humanized Delay: Skilled but believable (5.2s - 7.5s)
                 wait_time = random.uniform(5.2, 7.5) 
                 await asyncio.sleep(wait_time)
 
-                # 4. Score Logic: 10 points per round
                 current_score += 10 
                 
                 # Update WebSocket score
@@ -72,22 +74,26 @@ async def simulate_gameplay(match_id, bot_id):
                     "score": current_score
                 }))
                 
-                # Update Redis Heartbeat (Stringified for Upstash compatibility)
-                # Note: We use values={} dictionary for Upstash compatibility
+                # 4. Update Redis Heartbeat 
+                # IMPORTANT: redis-py uses 'mapping'. We stringify values for Upstash safety.
                 match_key = f"match:live:{match_id}"
-                r.hset(match_key, mapping={
-                    f"score:{bot_id}": str(current_score),
-                    f"last_seen:{bot_id}": str(time.time())
-                })
+                try:
+                    r.hset(match_key, mapping={
+                        f"score:{bot_id}": str(current_score),
+                        f"last_seen:{bot_id}": str(time.time())
+                    })
+                except Exception as redis_err:
+                    print(f"⚠️ Redis Update Error: {redis_err}")
                 
-                print(f"Match {match_id} | Round {i+1}: Bot scored. Total: {current_score}")
+                print(f"Match {match_id} | Round {i+1}: Bot score {current_score}")
 
             # 5. Finalize
             await asyncio.sleep(1.5)
             await websocket.send(json.dumps({"type": "GAME_OVER"}))
-            print(f"✅ Match {match_id} completed by Bot.")
+            print(f"✅ Match {match_id} completed successfully.")
 
     except Exception as e:
+        # Ignore normal closure codes
         if "1000" not in str(e): 
             print(f"❌ Match {match_id} Error: {e}")
 
@@ -110,29 +116,28 @@ async def watch_matches():
             if new_keys:
                 pipe = r.pipeline()
                 for key in new_keys:
-                    pipe.hmget(key, ["p2_id", "status"])
+                    pipe.hmget(key, "p2_id", "status")
                 results = pipe.execute()
 
                 for key, data in zip(new_keys, results):
                     match_id = key.split(":")[-1]
-                    # Upstash might return None or empty lists
                     if not data or len(data) < 2:
                         continue
                         
                     p2_id, status = data[0], data[1]
 
-                    # Trigger bot if P2 is a BOT and match is just created
+                    # Trigger bot if P2 is a BOT and match is newly created
                     if p2_id and str(p2_id).startswith("BOT") and status == "CREATED":
                         print(f"🎯 Bot {p2_id} assigned to Match {match_id}")
                         asyncio.create_task(simulate_gameplay(match_id, p2_id))
                     
                     processed.add(match_id)
 
-            # Cleanup 'processed' set to prevent memory leaks
+            # Memory cleanup for the processed set
             current_ids = {k.split(":")[-1] for k in match_keys}
             processed.intersection_update(current_ids)
 
-            # Polling frequency (5s for balanced performance/cost)
+            # Polling frequency: 5s is safe for Upstash Free/Paid limits
             await asyncio.sleep(5.0) 
 
         except Exception as e:
@@ -140,7 +145,7 @@ async def watch_matches():
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    # Start Health Check for Render/Deployment
+    # Start Health Check for Render
     threading.Thread(target=run_health_check, daemon=True).start()
     
     try:
