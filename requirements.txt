@@ -1,3 +1,3 @@
-websockets
-redis
-python-dotenv
+websockets==14.1
+redis==5.2.1
+python-dotenv==1.0.1
