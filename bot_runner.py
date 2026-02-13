@@ -79,7 +79,7 @@ async def play_as_god_bot(match_id, bot_id):
 
         print(f"🔗 {bot_id} vs {human_id[:8]}...")
         await asyncio.sleep(5.0) 
-
+        target_limit = random.choice([240, 280, 300])
         # 3. Shadow Loop with Global Difficulty Toggle
         current_score = 0
         last_pushed_score = -1
@@ -102,6 +102,14 @@ async def play_as_god_bot(match_id, bot_id):
                     wait_time = 0.3 
                 else:
                     wait_time = 1.2 
+                    
+                    
+            elif difficulty == "intelligent":
+                if current_score < target_limit:
+                    current_score += 10
+                    wait_time = random.uniform(1.0, 2.0) # Normal playing speed
+                else:
+                    wait_time = 1.5 # Stop scoring once limit is reached    
             else:
                 # --- 🧠 HUMAN MODE: CHALLENGING BUT BEATABLE ---
                 # Bot mimics a fast human but doesn't cheat with 20pt lead
