@@ -20,7 +20,7 @@ PORT = int(os.getenv("PORT", 10000))
 r = redis.from_url(REDIS_URL, decode_responses=True, retry_on_timeout=True, ssl_cert_reqs=None)
 
 # --- 🤖 BOT POOL SETUP ---
-BOT_POOL = [f"BOT_{str(i).zfill(3)}" for i in range(1, 21)]
+BOT_POOL = [f"BOT_{str(i).zfill(3)}" for i in range(1, 100)]
 random.shuffle(BOT_POOL)
 bot_index = 0
 
