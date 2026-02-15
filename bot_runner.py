@@ -79,7 +79,7 @@ async def play_as_god_bot(match_id, bot_id):
 
         print(f"🔗 {bot_id} vs {human_id[:8]}...")
         await asyncio.sleep(5.0) 
-        target_limit = random.choice([240, 280, 300])
+        target_limit = random.choice([240, 280, 300, 320, 350, 380])
         # 3. Shadow Loop with Global Difficulty Toggle
         current_score = 0
         last_pushed_score = -1
