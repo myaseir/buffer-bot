@@ -4,7 +4,6 @@ import json
 import random
 import redis
 import os
-import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -19,6 +18,9 @@ PORT = int(os.getenv("PORT", 10000))
 
 r = redis.from_url(REDIS_URL, decode_responses=True, retry_on_timeout=True, ssl_cert_reqs=None)
 
+# Global loop to handle bot tasks triggered by HTTP
+bot_loop = asyncio.new_event_loop()
+
 # --- 🤖 BOT POOL SETUP ---
 BOT_POOL = [f"BOT_{str(i).zfill(3)}" for i in range(1, 100)]
 random.shuffle(BOT_POOL)
@@ -31,20 +33,8 @@ def get_next_bot():
     if bot_index == 0: random.shuffle(BOT_POOL)
     return bot
 
-# --- 🌐 HEALTH CHECK ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"BrainBuffer Bot: Admin-Controlled Mode")
-    def log_message(self, format, *args): return 
-
-def run_health_check():
-    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
-    server.serve_forever()
-
-# --- 🎮 GAMEPLAY LOGIC ---
-async def play_as_god_bot(match_id, bot_id):
+# --- 🎮 GAMEPLAY LOGIC (Human Mimicry) ---
+async def play_as_dynamic_bot(match_id, bot_id):
     lock_key = f"bot_lock:{match_id}"
     if not r.set(lock_key, bot_id, nx=True, ex=120): return 
 
@@ -54,15 +44,20 @@ async def play_as_god_bot(match_id, bot_id):
     
     websocket = None
     try:
+        # --- PHASE 1: NATURAL JOIN DELAY ---
+        # Humans take a moment to see the "Found Match" screen and load
+        await asyncio.sleep(random.uniform(1.5, 3.5))
+
         params = {"open_timeout": 25, "ping_interval": 20, "ping_timeout": 60}
         try:
             websocket = await websockets.connect(uri, additional_headers=headers, **params)
         except TypeError:
             websocket = await websockets.connect(uri, extra_headers=headers, **params)
             
-        print(f"✅ {bot_id} entered {match_id[:12]}")
+        print(f"✅ {bot_id} joined room {match_id[:12]}")
 
-        # 1. Start Detection
+        # --- PHASE 2: WAIT FOR START SIGNAL ---
+        # Mimics the 3-2-1 countdown logic
         while True:
             try:
                 msg = await asyncio.wait_for(websocket.recv(), timeout=1.5)
@@ -71,70 +66,75 @@ async def play_as_god_bot(match_id, bot_id):
                 if r.hexists(match_key, "rounds"): break
                 continue
 
-        # 2. Identify Target
+        # --- PHASE 3: COUNTDOWN BUFFER ---
+        # Even after GAME_START, humans wait for the countdown to hit 0
+        await asyncio.sleep(4.5) 
+
+        # Identify Human Target
         m_data = r.hgetall(match_key)
         p1, p2 = m_data.get("p1_id"), m_data.get("p2_id")
         human_id = p2 if str(p1) == str(bot_id) else p1
         if not human_id: return
 
-        print(f"🔗 {bot_id} vs {human_id[:8]}...")
-        await asyncio.sleep(5.0) 
-        target_limit = random.choice([240, 280, 300, 320, 350, 380])
-        # 3. Shadow Loop with Global Difficulty Toggle
+        print(f"🔗 {bot_id} shadowing {human_id[:8]}...")
+        
         current_score = 0
         last_pushed_score = -1
         patience = 0
+        target_limit = random.choice([240, 260, 290]) # Limit for Intelligent mode
         
+        # --- PHASE 4: SHADOW LOOP ---
         while True:
-            # EFFICIENCY: Read human data AND the Admin's global difficulty key
-            # We use a pipeline or multiple gets to check the global toggle
+            # Check Admin Toggle (human / intelligent / god)
+            difficulty = r.get("bot_settings:difficulty") or "god"
+            
+            # Get Human Stats
             h_data = r.hmget(match_key, f"score:{human_id}", f"status:{human_id}")
             h_score = int(h_data[0]) if h_data[0] else 0
             h_status = h_data[1]
 
-            # ✅ READ THE ADMIN TOGGLE FROM REDIS
-            difficulty = r.get("bot_settings:difficulty") or "god"
-
             if difficulty == "god":
-                # --- 🔥 GOD MODE: UNBEATABLE ---
+                # GOD: Fast reaction, stays 20pts ahead
                 if current_score < (h_score + 20):
                     current_score += 10
-                    wait_time = 0.3 
+                    wait_time = random.uniform(0.4, 0.7) # Human-pro speed
                 else:
-                    wait_time = 1.2 
-                    
-                    
+                    wait_time = random.uniform(0.8, 1.2)
+            
             elif difficulty == "intelligent":
+                # INTELLIGENT: Skilled player speed, caps at target_limit
                 if current_score < target_limit:
                     current_score += 10
-                    wait_time = random.uniform(1.0, 2.0) # Normal playing speed
+                    wait_time = random.uniform(0.8, 1.8)
                 else:
-                    wait_time = 1.5 # Stop scoring once limit is reached    
-            else:
-                # --- 🧠 HUMAN MODE: CHALLENGING BUT BEATABLE ---
-                # Bot mimics a fast human but doesn't cheat with 20pt lead
+                    wait_time = 2.0
+            
+            else: # HUMAN MODE
+                # HUMAN: Slow reaction, stays 10pts behind
                 if current_score < (h_score - 10):
                     current_score += 10
-                    wait_time = random.uniform(2.0, 4.0) # Slower reaction
+                    wait_time = random.uniform(1.8, 3.5)
                 else:
                     wait_time = 1.5
 
-            # Sync Score
+            # Push Score Update
             if current_score != last_pushed_score:
                 await websocket.send(json.dumps({"type": "SCORE_UPDATE", "score": current_score}))
                 r.hset(match_key, f"score:{bot_id}", str(current_score))
                 last_pushed_score = current_score
-                print(f"📡 {bot_id} [{difficulty.upper()}]: {current_score} | Target: {h_score}")
+                print(f"📡 {bot_id} [{difficulty.upper()}]: {current_score} vs {h_score}")
 
             await asyncio.sleep(wait_time)
 
+            # End game detection
             if h_status == "FINISHED": patience += 1
-            if h_status == "FINISHED" and patience > 4: break
-            if not r.exists(match_key): break
+            if (h_status == "FINISHED" and patience > 5) or not r.exists(match_key): 
+                break
 
-        await asyncio.sleep(0.5)
+        # Natural exit delay
+        await asyncio.sleep(random.uniform(1.0, 2.0))
         await websocket.send(json.dumps({"type": "GAME_OVER"}))
-        print(f"🏆 {bot_id} finished match_{match_id[:8]}")
+        print(f"🏁 {bot_id} completed {match_id[:8]}")
 
     except Exception as e:
         print(f"❌ {bot_id} Error: {e}")
@@ -142,26 +142,45 @@ async def play_as_god_bot(match_id, bot_id):
         if websocket: await websocket.close()
         r.delete(lock_key)
 
-# --- 👀 OBSERVER ---
-async def watch_and_scale():
-    print(f"🚀 Bot Observer Online (Admin-Controlled Mode)")
-    active_matches = set()
-    while True:
-        try:
-            match_keys = [k for k in r.scan_iter("match:live:*")]
-            for key in match_keys:
-                match_id = key.split(":")[-1]
-                if match_id not in active_matches:
-                    m_data = r.hmget(key, "p2_id", "status")
-                    if m_data[0] and str(m_data[0]).startswith("BOT") and m_data[1] == "CREATED":
-                        active_matches.add(match_id)
-                        asyncio.create_task(play_as_god_bot(match_id, get_next_bot()))
+# --- 🌐 WEBHOOK SERVER (Replaces Watcher) ---
+class BotServerHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == '/spawn-bot':
+            content_length = int(self.headers['Content-Length'])
+            post_data = json.loads(self.rfile.read(content_length))
+            match_id = post_data.get("match_id")
             
-            active_matches = {k.split(":")[-1] for k in match_keys if k.split(":")[-1] in active_matches}
-            await asyncio.sleep(2.5) 
-        except:
-            await asyncio.sleep(5)
+            if match_id:
+                print(f"🔔 Wake-up signal for Match: {match_id}")
+                asyncio.run_coroutine_threadsafe(
+                    play_as_dynamic_bot(match_id, get_next_bot()), 
+                    bot_loop
+                )
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot Dispatched")
+        else:
+            self.send_response(404)
+            self.end_headers()
 
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot Server: Awake")
+
+    def log_message(self, format, *args): return 
+
+def run_http_server():
+    server = HTTPServer(('0.0.0.0', PORT), BotServerHandler)
+    print(f"📡 Webhook listener active on port {PORT}")
+    server.serve_forever()
+
+# --- 🚀 EXECUTION ---
 if __name__ == "__main__":
-    threading.Thread(target=run_health_check, daemon=True).start()
-    asyncio.run(watch_and_scale())
+    # Start Webhook listener in thread
+    threading.Thread(target=run_http_server, daemon=True).start()
+    
+    # Start Async Loop in main thread
+    print("💤 Bot Service Standing By for Backend Trigger...")
+    asyncio.set_event_loop(bot_loop)
+    bot_loop.run_forever()
