@@ -81,7 +81,7 @@ async def play_as_dynamic_bot(match_id, bot_id):
         current_score = 0
         last_pushed_score = -1
         patience = 0
-        target_limit = random.choice([240, 260, 290]) # Limit for Intelligent mode
+        target_limit = random.choice([300, 340, 380, 400, 420, 450]) # Limit for Intelligent mode
         
         # --- PHASE 4: SHADOW LOOP ---
         while True:
@@ -113,7 +113,7 @@ async def play_as_dynamic_bot(match_id, bot_id):
                 # HUMAN: Slow reaction, stays 10pts behind
                 if current_score < (h_score - 10):
                     current_score += 10
-                    wait_time = random.uniform(1.8, 3.5)
+                    wait_time = random.uniform(0.8, 1.8)
                 else:
                     wait_time = 1.5
 
