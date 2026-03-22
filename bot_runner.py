@@ -81,28 +81,30 @@ async def play_as_dynamic_bot(match_id, bot_id):
         current_score = 0
         last_pushed_score = -1
         patience = 0
-        target_limit = random.choice([300, 340, 380, 400, 420, 450]) # Limit for Intelligent mode
+        target_limit = random.choice([ 380, 430, 440, 480,500,530,540,]) # Limit for Intelligent mode
         
         # --- PHASE 4: SHADOW LOOP ---
         while True:
-            # Check Admin Toggle (human / intelligent / god)
             difficulty = r.get("bot_settings:difficulty") or "god"
             
-            # Get Human Stats
             h_data = r.hmget(match_key, f"score:{human_id}", f"status:{human_id}")
             h_score = int(h_data[0]) if h_data[0] else 0
             h_status = h_data[1]
 
             if difficulty == "god":
-                # GOD: Fast reaction, stays 20pts ahead
                 if current_score < (h_score + 20):
                     current_score += 10
-                    wait_time = random.uniform(0.4, 0.7) # Human-pro speed
+                    # Sprint if near the end, otherwise stay fast
+                    wait_time = random.uniform(0.05, 0.15) if h_score > 400 else random.uniform(0.3, 0.5)
                 else:
-                    wait_time = random.uniform(0.8, 1.2)
+                    wait_time = random.uniform(0.6, 0.9)
+
+                # Ceiling Protection: Don't let the human touch the win first
+                if h_score >= 480 and current_score < 500:
+                    current_score = 500
+                    wait_time = 0.01
             
             elif difficulty == "intelligent":
-                # INTELLIGENT: Skilled player speed, caps at target_limit
                 if current_score < target_limit:
                     current_score += 10
                     wait_time = random.uniform(0.8, 1.8)
@@ -110,12 +112,17 @@ async def play_as_dynamic_bot(match_id, bot_id):
                     wait_time = 2.0
             
             else: # HUMAN MODE
-                # HUMAN: Slow reaction, stays 10pts behind
                 if current_score < (h_score - 10):
                     current_score += 10
                     wait_time = random.uniform(0.8, 1.8)
                 else:
                     wait_time = 1.5
+
+            # --- THE "LAST GASP" WINNER ---
+            # If human is finished and bot is losing, force a win update immediately
+            if h_status == "FINISHED" and difficulty == "god" and current_score <= h_score:
+                current_score = h_score + 10
+                # No sleep here, send immediately
 
             # Push Score Update
             if current_score != last_pushed_score:
@@ -123,6 +130,16 @@ async def play_as_dynamic_bot(match_id, bot_id):
                 r.hset(match_key, f"score:{bot_id}", str(current_score))
                 last_pushed_score = current_score
                 print(f"📡 {bot_id} [{difficulty.upper()}]: {current_score} vs {h_score}")
+
+            # End game detection logic
+            if h_status == "FINISHED": 
+                patience += 1
+            
+            # Use a higher patience for God mode to ensure the last score packet arrives
+            exit_threshold = 10 if difficulty == "god" else 5
+            
+            if (h_status == "FINISHED" and patience > exit_threshold) or not r.exists(match_key): 
+                break
 
             await asyncio.sleep(wait_time)
 
